@@ -1,0 +1,36 @@
+{
+    "format": {
+        "applyOnCommandsCompletion": true,
+        "scrypt": "npm run format"
+    },
+    "generationScripts": {
+        "uniqueMessages": {
+            "jsonConfigFilePath": "sample-data/unique-messages.json",
+            "cacheConfigCommand": "echo \"Put here json config generation command\"",
+            "resultSourceCodeFilePath": "files-buff/entities/bot-content/nested/unique-message.entity.ts"
+        },
+        "other": [
+            {
+                "title": "New scene",
+                "nameQuestion": "Enter new scene name",
+                "namePlaceholders": {
+                    "caseCamel": "<# sceneName #>",
+                    "casePascal": "<# SceneName #>",
+                    "caseKebub": "<# scene-name #>"
+                },
+                "git": {
+                    "commitMessage": "Scene created: <# SceneName #>"
+                },
+                "createFiles": [
+                    {
+                        "resultSourceCodeFilePath": "files-buff/presentation/scenes/implementations/<# scene-name #>.scene.ts",
+                        "templateFile": "sample-data/scene.template.txt"
+                    }
+                ],
+                "replacements": [
+                    
+                ]
+            }
+        ]
+    }
+}
