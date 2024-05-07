@@ -31,7 +31,7 @@ export class GenerationCommand extends CommandRunner {
             p.outro(chalk.greenBright('Goodbye 👋'))
         }
 
-        p.intro(chalk.black(textConst.welcome))
+        p.intro(chalk.black.bgHex('ffffff')(textConst.welcome))
 
         const configFilePath = './shinest-cli.json'
         const configRaw = readFile(configFilePath)
@@ -180,7 +180,7 @@ export class GenerationCommand extends CommandRunner {
         this.loading = p.spinner()
         this.loading.start('Unique messages caching in progress...')
 
-        runConsoleScript(configUnique.cacheConfigCommand)
+        await runConsoleScript(configUnique.cacheConfigCommand)
 
         this.loading.stop('Unique messages caching complete')
 

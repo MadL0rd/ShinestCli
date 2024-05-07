@@ -1,14 +1,19 @@
 {
   "name": "@madl0rd/shinest-cli",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "CLI for ShinestBot envieronment",
   "author": "MadL0rd",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MadL0rd/ShinestCli"
+  },
+  "homepage": "https://github.com/MadL0rd/ShinestCli",
   "publishConfig": {
     "access": "public"
   },
   "engines": {
-    "node": ">= 20.9.0"
+    "node": ">= 20.0.0"
   },
   "bin": {
     "shinest": "dist/main.js"
