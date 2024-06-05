@@ -103,33 +103,25 @@ export class GenerationCommand extends CommandRunner {
     private async nestGenerate() {
         const p = await import('@clack/prompts')
 
-        const options = { mo: 'Module', s: 'Service' } as const
-        const optionsRaw = Object.keys(options) as (keyof typeof options)[]
-
-        const selectedOptionRaw = await p.select({
-            message: 'Select generation source files type',
-            initialValue: '1',
-            options: optionsRaw.map((optionKey) => {
-                return { value: optionKey, label: options[optionKey] }
-            }),
-        })
-        const selectedOption = selectedOptionRaw as keyof typeof options
-
+        // Dir selection
         let selectedDir: string | undefined
-        let currentPath = './src'
+        const baseDir = './src'
+        let currentPath = baseDir
         while (!selectedDir) {
             const dirContent = getDirectories(currentPath)
             const completeOption = 'complete'
             const prevDir = '../'
+
+            if (currentPath !== baseDir) dirContent.push(prevDir)
+
             const selectedDirOption = await p.select({
                 message: `Select generation folder: ${currentPath}`,
                 initialValue: '1',
                 options: [
                     { value: completeOption, label: `Select current dir`, hint: currentPath },
                     ...dirContent.map((folder) => {
-                        return { value: '/' + folder }
+                        return folder !== prevDir ? { value: '/' + folder } : { value: folder }
                     }),
-                    { value: prevDir },
                 ],
             })
 
@@ -142,7 +134,7 @@ export class GenerationCommand extends CommandRunner {
                     break
 
                 case completeOption:
-                    selectedDir = currentPath
+                    selectedDir = currentPath.replace(baseDir, '')
                     break
 
                 default:
@@ -151,8 +143,21 @@ export class GenerationCommand extends CommandRunner {
             }
         }
 
-        let name: string | undefined
+        // Nest cli command selection
+        const options = { mo: 'Module', s: 'Service' } as const
+        const optionsRaw = Object.keys(options) as (keyof typeof options)[]
 
+        const selectedOptionRaw = await p.select({
+            message: 'Select generation source files type',
+            initialValue: '1',
+            options: optionsRaw.map((optionKey) => {
+                return { value: optionKey, label: options[optionKey] }
+            }),
+        })
+        const selectedOption = selectedOptionRaw as keyof typeof options
+
+        // Name input
+        let name: string | undefined
         while (!name || name === 'undefined' || name.length < 3) {
             const input = await p.text({
                 message: 'Enter name in any case',
@@ -171,8 +176,8 @@ export class GenerationCommand extends CommandRunner {
                 break
         }
 
+        // Command call
         p.note(command, 'Result command:')
-
         await runConsoleScript(command, true)
     }
 
