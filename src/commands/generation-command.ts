@@ -5,7 +5,7 @@ import chalk from 'chalk'
 
 import { caseCamel, casePascal, caseKebub } from 'src/utils/case-converter'
 import { runConsoleScript } from 'src/utils/run-console-script'
-import { ensureDirectoryExistence, readFile } from 'src/utils/file-system'
+import { ensureDirectoryExistence, getDirectories, readFile } from 'src/utils/file-system'
 import {
     CliConfig,
     CliConfigSchema,
@@ -40,6 +40,7 @@ export class GenerationCommand extends CommandRunner {
         const config = CliConfigSchema.parse(JSON.parse(configRaw))
 
         const uniqueMessagesGenerationOption = 'uniqueMessages'
+        const nestCliGenOption = 'nestGenerate'
         const exitOption = 'exit'
         const selectedOptionRaw = await p.select({
             message: '🛠 Select generation option',
@@ -53,6 +54,11 @@ export class GenerationCommand extends CommandRunner {
                 ...config.generationScripts.other.map((option) => {
                     return { value: option.title }
                 }),
+                {
+                    value: nestCliGenOption,
+                    label: 'Generate with nest cli',
+                    hint: 'Call global installed nest cli commands',
+                },
                 { value: exitOption, label: 'Exit' },
             ],
         })
@@ -63,6 +69,11 @@ export class GenerationCommand extends CommandRunner {
                     await this.generateUniqueMessages(config)
                     await this.formatCodeIfNeeded(config)
                     break
+
+                case nestCliGenOption:
+                    await this.nestGenerate()
+                    await this.formatCodeIfNeeded(config)
+                    return
 
                 case exitOption:
                     sayGoodbye()
@@ -87,6 +98,82 @@ export class GenerationCommand extends CommandRunner {
         }
 
         await sayGoodbye()
+    }
+
+    private async nestGenerate() {
+        const p = await import('@clack/prompts')
+
+        const options = { mo: 'Module', s: 'Service' } as const
+        const optionsRaw = Object.keys(options) as (keyof typeof options)[]
+
+        const selectedOptionRaw = await p.select({
+            message: 'Select generation source files type',
+            initialValue: '1',
+            options: optionsRaw.map((optionKey) => {
+                return { value: optionKey, label: options[optionKey] }
+            }),
+        })
+        const selectedOption = selectedOptionRaw as keyof typeof options
+
+        let selectedDir: string | undefined
+        let currentPath = './src'
+        while (!selectedDir) {
+            const dirContent = getDirectories(currentPath)
+            const completeOption = 'complete'
+            const prevDir = '../'
+            const selectedDirOption = await p.select({
+                message: `Select generation folder: ${currentPath}`,
+                initialValue: '1',
+                options: [
+                    { value: completeOption, label: `Select current dir`, hint: currentPath },
+                    ...dirContent.map((folder) => {
+                        return { value: '/' + folder }
+                    }),
+                    { value: prevDir },
+                ],
+            })
+
+            switch (selectedDirOption) {
+                case prevDir:
+                    const folderNames = currentPath.split('/')
+                    folderNames.pop()
+                    if (folderNames.length == 0) folderNames.push('.')
+                    currentPath = folderNames.join('/')
+                    break
+
+                case completeOption:
+                    selectedDir = currentPath
+                    break
+
+                default:
+                    currentPath += String(selectedDirOption)
+                    break
+            }
+        }
+
+        let name: string | undefined
+
+        while (!name || name === 'undefined' || name.length < 3) {
+            const input = await p.text({
+                message: 'Enter name in any case',
+            })
+            name = String(input)
+        }
+        name = caseKebub(name)
+
+        let command: string
+        switch (selectedOption) {
+            case 'mo':
+                command = `nest g mo ${selectedDir}/${name}`
+                break
+            case 's':
+                command = `nest g s ${selectedDir}/${name} --no-spec`
+                break
+        }
+
+        p.note(command, 'Result command:')
+
+        await runConsoleScript(command, true)
     }
 
     private async formatCodeIfNeeded(config: CliConfig) {
