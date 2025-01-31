@@ -15,7 +15,7 @@ export type CreateFile = z.infer<typeof CreateFileSchema>
 export const NamePlaceholdersSchema = z.object({
     caseCamel: z.string(),
     casePascal: z.string(),
-    caseKebub: z.string(),
+    caseKebab: z.string(),
 })
 export type NamePlaceholders = z.infer<typeof NamePlaceholdersSchema>
 
