@@ -16,7 +16,7 @@
                 "namePlaceholders": {
                     "caseCamel": "<# sceneName #>",
                     "casePascal": "<# SceneName #>",
-                    "caseKebub": "<# scene-name #>"
+                    "caseKebab": "<# scene-name #>"
                 },
                 "git": {
                     "commitMessage": "Scene created: <# SceneName #>"

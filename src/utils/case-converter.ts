@@ -25,7 +25,7 @@ export function caseCamel(name: string): string {
         .join('')
 }
 
-export function caseKebub(name: string) {
+export function caseKebab(name: string) {
     if (!name) return name
     return separateWordComponents(name).join('-')
 }

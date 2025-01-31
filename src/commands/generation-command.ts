@@ -3,7 +3,7 @@ import { Command, CommandRunner } from 'nest-commander'
 import * as fs from 'fs'
 import chalk from 'chalk'
 
-import { caseCamel, casePascal, caseKebub } from 'src/utils/case-converter'
+import { caseCamel, casePascal, caseKebab } from 'src/utils/case-converter'
 import { runConsoleScript } from 'src/utils/run-console-script'
 import { ensureDirectoryExistence, getDirectories, readFile } from 'src/utils/file-system'
 import {
@@ -164,7 +164,7 @@ export class GenerationCommand extends CommandRunner {
             })
             name = String(input)
         }
-        name = caseKebub(name)
+        name = caseKebab(name)
 
         let command: string
         switch (selectedOption) {
@@ -210,12 +210,12 @@ export class GenerationCommand extends CommandRunner {
         const names = {
             caseCamel: caseCamel(name),
             casePascal: casePascal(name),
-            caseKebub: caseKebub(name),
+            caseKebab: caseKebab(name),
         }
         const configString = JSON.stringify(config)
             .replaceAll(placeholders.caseCamel, names.caseCamel)
             .replaceAll(placeholders.casePascal, names.casePascal)
-            .replaceAll(placeholders.caseKebub, names.caseKebub)
+            .replaceAll(placeholders.caseKebab, names.caseKebab)
         config = OtherSchema.parse(JSON.parse(configString))
         config.namePlaceholders = placeholders
 
@@ -227,7 +227,7 @@ export class GenerationCommand extends CommandRunner {
             const content = contentRaw
                 .replaceAll(placeholders.caseCamel, names.caseCamel)
                 .replaceAll(placeholders.casePascal, names.casePascal)
-                .replaceAll(placeholders.caseKebub, names.caseKebub)
+                .replaceAll(placeholders.caseKebab, names.caseKebab)
 
             ensureDirectoryExistence(file.resultSourceCodeFilePath)
             fs.writeFileSync(file.resultSourceCodeFilePath, content, 'utf8')
