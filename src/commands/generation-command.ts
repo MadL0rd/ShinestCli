@@ -205,7 +205,7 @@ export class GenerationCommand extends CommandRunner {
         this.loading = p.spinner()
         this.loading.start('Generating source code')
 
-        // Replace valiables with names
+        // Replace variables with names
         const placeholders = config.namePlaceholders
         const names = {
             caseCamel: caseCamel(name),
@@ -312,7 +312,7 @@ export class GenerationCommand extends CommandRunner {
         sourceCode += '\n\n'
 
         // base type
-        sourceCode += 'export class UniqueMessagePrimitive {'
+        sourceCode += 'export class UniqueMessagePrimitive {\n'
         sourceCode += groupNames
             .map((name) => `readonly ${caseCamel(name)} = new ${casePascal(name)}()`)
             .join('\n')
@@ -346,8 +346,7 @@ export class GenerationCommand extends CommandRunner {
                     const comment = uniqueMessage.comment
                         ? `/**\n * @description ${uniqueMessage.comment.replaceAll('\n', '\n * ')}\n*/\n`
                         : ''
-                    const value = uniqueMessage.value.replaceAll('\n', '\\n')
-                    return `${comment}readonly ${caseCamel(uniqueMessage.key)} = '${value}'`
+                    return `${comment}readonly ${caseCamel(uniqueMessage.key)} = ${JSON.stringify(uniqueMessage.value)}`
                 })
                 .join('\n')
             sourceCode += '}\n'
