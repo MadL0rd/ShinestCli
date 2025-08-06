@@ -54,6 +54,13 @@
     "params": []
   },
   {
+    "group": "support",
+    "key": "commandsCloseConversation",
+    "value": "/close\n/c\n/с\n/C\n/С\n\\c\n\\с\n\\C\n\\С",
+    "comment": "Закрывает обращение\nБуквы с разные: ru, en",
+    "params": []
+  },
+  {
     "group": "mainMenu",
     "key": "text",
     "value": "Ты оказался в главном меню 😊",
