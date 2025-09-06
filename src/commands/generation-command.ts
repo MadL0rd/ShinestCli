@@ -1,3 +1,5 @@
+import 'reflect-metadata'
+
 import * as p from '@clack/prompts'
 import { Injectable } from '@nestjs/common'
 import chalk from 'chalk'
@@ -24,6 +26,7 @@ type GenerateCommandOptions = {
 @Command({
     name: 'generate',
     aliases: ['g'],
+    options: { isDefault: true },
     description: 'Common file generation command',
 })
 export class GenerationCommand extends CommandRunner {
@@ -34,14 +37,22 @@ export class GenerationCommand extends CommandRunner {
     }
 
     @Option({
-        flags: '-k, --keep-open',
-        description: 'Transform message to uppercase',
+        flags: '-k, --keep-open [keepOpen]',
+        description: 'Keep CLI open after command',
+        name: 'keepOpen',
     })
-    parseKeepOpen(val: string): boolean {
-        return true
+    parseKeepOpen(val?: string): boolean {
+        // --keep-open            -> true
+        // --keep-open false/0/no -> false
+        // --keep-open true/1/yes -> true
+        if (val === undefined) {
+            return true
+        }
+        return /^(1|true|yes|y)$/i.test(val)
     }
 
-    async run(inputs: string[], options?: {}): Promise<void> {
+    async run(inputs: string[], options?: GenerateCommandOptions): Promise<void> {
+        await runConsoleScript('clear')
         const sayGoodbye = function () {
             p.outro(chalk.greenBright('Goodbye 👋'))
         }
@@ -86,9 +97,10 @@ export class GenerationCommand extends CommandRunner {
                     break
 
                 case nestCliGenOption:
-                    await this.nestGenerate()
-                    await this.formatCodeIfNeeded(config)
-                    return
+                    if (await this.nestGenerate()) {
+                        await this.formatCodeIfNeeded(config)
+                    }
+                    break
 
                 case exitOption:
                     sayGoodbye()
@@ -112,10 +124,12 @@ export class GenerationCommand extends CommandRunner {
             return
         }
 
+        if (options?.keepOpen) return this.run(inputs, options)
+
         sayGoodbye()
     }
 
-    private async nestGenerate() {
+    private async nestGenerate(): Promise<boolean> {
         // Dir selection
         let selectedDir: string | undefined
         const baseDir = './src'
@@ -137,6 +151,8 @@ export class GenerationCommand extends CommandRunner {
                     }),
                 ],
             })
+
+            if (p.isCancel(selectedDirOption)) return false
 
             switch (selectedDirOption) {
                 case prevDir:
@@ -175,6 +191,7 @@ export class GenerationCommand extends CommandRunner {
             const input = await p.text({
                 message: 'Enter name in any case',
             })
+            if (p.isCancel(input)) return false
             name = String(input)
         }
         name = caseKebab(name)
@@ -192,6 +209,7 @@ export class GenerationCommand extends CommandRunner {
         // Command call
         p.note(command, 'Result command:')
         await runConsoleScript(command, true)
+        return true
     }
 
     private async formatCodeIfNeeded(config: CliConfig) {
@@ -210,6 +228,7 @@ export class GenerationCommand extends CommandRunner {
             const input = await p.text({
                 message: config.nameQuestion,
             })
+            if (p.isCancel(input)) return
             name = String(input)
         }
 

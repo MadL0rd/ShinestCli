@@ -6,7 +6,7 @@
             "request": "launch",
             "name": "Debug Nest Framework",
             "runtimeExecutable": "npm",
-            "runtimeArgs": ["run", "start:dev", "--", "--inspect-brk"],
+            "runtimeArgs": ["run", "start:dev", "--", "generate", "--keep-open"],
             "autoAttachChildProcesses": true,
             "restart": true,
             "sourceMaps": true,
