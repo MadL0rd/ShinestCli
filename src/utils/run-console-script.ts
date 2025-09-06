@@ -1,6 +1,7 @@
+import { exec as execCb } from 'child_process'
 import util from 'util'
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const exec = util.promisify(require('child_process').exec)
+
+const exec = util.promisify(execCb)
 
 export async function runConsoleScript(script = '', logStdout: boolean = false) {
     // try {

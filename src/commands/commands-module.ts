@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common'
-import { GenerationCommand } from './generation-command'
+import { GenerationCommand } from './generation-command.js'
 
 @Module({
     imports: [],

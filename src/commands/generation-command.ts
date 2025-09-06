@@ -1,11 +1,8 @@
+import * as p from '@clack/prompts'
 import { Injectable } from '@nestjs/common'
-import { Command, CommandRunner } from 'nest-commander'
-import * as fs from 'fs'
 import chalk from 'chalk'
-
-import { caseCamel, casePascal, caseKebab } from 'src/utils/case-converter'
-import { runConsoleScript } from 'src/utils/run-console-script'
-import { ensureDirectoryExistence, getDirectories, readFile } from 'src/utils/file-system'
+import * as fs from 'fs/promises'
+import { Command, CommandRunner, Option } from 'nest-commander'
 import {
     CliConfig,
     CliConfigSchema,
@@ -13,11 +10,22 @@ import {
     OtherSchema,
     UniqueMessagesConfigElement,
     UniqueMessagesConfigSchema,
-} from '../models/cli-config-schema'
-import { textConst } from 'src/utils/constants'
+} from '../models/cli-config-schema.js'
+import { caseCamel, caseKebab, casePascal } from '../utils/case-converter.js'
+import { textConst } from '../utils/constants.js'
+import { ensureDirectoryExistence, getDirectories } from '../utils/file-system.js'
+import { runConsoleScript } from '../utils/run-console-script.js'
+
+type GenerateCommandOptions = {
+    keepOpen?: boolean
+}
 
 @Injectable()
-@Command({ name: 'generate', aliases: ['g'], description: 'Common file generation command' })
+@Command({
+    name: 'generate',
+    aliases: ['g'],
+    description: 'Common file generation command',
+})
 export class GenerationCommand extends CommandRunner {
     private loading?: {
         start: (msg?: string | undefined) => void
@@ -25,8 +33,15 @@ export class GenerationCommand extends CommandRunner {
         message: (msg?: string | undefined) => void
     }
 
-    async run(): Promise<void> {
-        const p = await import('@clack/prompts')
+    @Option({
+        flags: '-k, --keep-open',
+        description: 'Transform message to uppercase',
+    })
+    parseKeepOpen(val: string): boolean {
+        return true
+    }
+
+    async run(inputs: string[], options?: {}): Promise<void> {
         const sayGoodbye = function () {
             p.outro(chalk.greenBright('Goodbye 👋'))
         }
@@ -34,7 +49,7 @@ export class GenerationCommand extends CommandRunner {
         p.intro(chalk.black.bgHex('ffffff')(textConst.welcome))
 
         const configFilePath = './shinest-cli.json'
-        const configRaw = readFile(configFilePath)
+        const configRaw = await fs.readFile(configFilePath, 'utf8')
         if (!configRaw) throw Error(`Can not read file '${configFilePath}`)
 
         const config = CliConfigSchema.parse(JSON.parse(configRaw))
@@ -97,12 +112,10 @@ export class GenerationCommand extends CommandRunner {
             return
         }
 
-        await sayGoodbye()
+        sayGoodbye()
     }
 
     private async nestGenerate() {
-        const p = await import('@clack/prompts')
-
         // Dir selection
         let selectedDir: string | undefined
         const baseDir = './src'
@@ -184,7 +197,6 @@ export class GenerationCommand extends CommandRunner {
     private async formatCodeIfNeeded(config: CliConfig) {
         if (!config.format.applyOnCommandsCompletion || !config.format.scrypt) return
 
-        const p = await import('@clack/prompts')
         this.loading = p.spinner()
         this.loading.start('✨ Formatting in progress...')
         await runConsoleScript(config.format.scrypt)
@@ -192,7 +204,6 @@ export class GenerationCommand extends CommandRunner {
     }
 
     private async generateCustomFile(config: Other, commonConfig: CliConfig) {
-        const p = await import('@clack/prompts')
         let name: string | undefined
 
         while (!name || name === 'undefined' || name.length < 3) {
@@ -221,7 +232,7 @@ export class GenerationCommand extends CommandRunner {
 
         // Create files
         for (const file of config.createFiles) {
-            const contentRaw = readFile(file.templateFile)
+            const contentRaw = await fs.readFile(file.templateFile, 'utf8')
             if (!contentRaw) throw Error(`Can not read file '${file.templateFile}`)
 
             const content = contentRaw
@@ -230,22 +241,24 @@ export class GenerationCommand extends CommandRunner {
                 .replaceAll(placeholders.caseKebab, names.caseKebab)
 
             ensureDirectoryExistence(file.resultSourceCodeFilePath)
-            fs.writeFileSync(file.resultSourceCodeFilePath, content, 'utf8')
+            await fs.writeFile(file.resultSourceCodeFilePath, content, 'utf8')
         }
 
         // Update imports etc.
         for (const replacement of config.replacements) {
-            const contentRaw = readFile(replacement.filePath)
+            const contentRaw = fs.readFile(replacement.filePath)
             if (!contentRaw) {
                 throw Error(`Can not read file '${replacement.filePath}`)
                 return
             }
 
-            const content = fs
-                .readFileSync(replacement.filePath, 'utf8')
-                .replaceAll(replacement.placeholder, replacement.replaceWith)
+            const content = await fs
+                .readFile(replacement.filePath, 'utf8')
+                .then((content) =>
+                    content.replaceAll(replacement.placeholder, replacement.replaceWith)
+                )
 
-            fs.writeFileSync(replacement.filePath, content, 'utf8')
+            await fs.writeFile(replacement.filePath, content, 'utf8')
         }
 
         const createdFiles = config.createFiles
@@ -268,7 +281,6 @@ export class GenerationCommand extends CommandRunner {
 
     private async generateUniqueMessages(config: CliConfig) {
         const configUnique = config.generationScripts.uniqueMessages
-        const p = await import('@clack/prompts')
         this.loading = p.spinner()
         this.loading.start('Unique messages caching in progress...')
 
@@ -279,7 +291,7 @@ export class GenerationCommand extends CommandRunner {
         this.loading = p.spinner()
         this.loading.start('Generating source code')
 
-        const jsonString = readFile(configUnique.jsonConfigFilePath)
+        const jsonString = await fs.readFile(configUnique.jsonConfigFilePath, 'utf8')
         if (!jsonString) throw Error(`Can not read file '${configUnique.jsonConfigFilePath}`)
 
         const uniqueMessagesJson = JSON.parse(jsonString)
@@ -390,7 +402,7 @@ export class GenerationCommand extends CommandRunner {
         }
 
         ensureDirectoryExistence(configUnique.resultSourceCodeFilePath)
-        fs.writeFileSync(configUnique.resultSourceCodeFilePath, sourceCode, 'utf8')
+        await fs.writeFile(configUnique.resultSourceCodeFilePath, sourceCode, 'utf8')
         this.loading.stop(
             `Source code generated: ${chalk.blue(configUnique.resultSourceCodeFilePath)}`
         )

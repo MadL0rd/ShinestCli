@@ -1,0 +1,10 @@
+{
+    "eslint.useFlatConfig": true,
+    "editor.codeActionsOnSave": {
+        "source.sortImports": "explicit",
+        "source.removeUnusedImports": "explicit"
+    },
+    "editor.formatOnSave": true,
+    "typescript.preferences.importModuleSpecifier": "relative",
+    "typescript.updateImportsOnFileMove.enabled": "always"
+}
