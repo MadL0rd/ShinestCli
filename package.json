@@ -20,7 +20,7 @@
     "shinest": "dist/main.js"
   },
   "scripts": {
-    "build": "nest build && tsc-alias",
+    "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\"",
     "start": "nest start -- g",
     "start:dev": "nest start --watch -- g",
