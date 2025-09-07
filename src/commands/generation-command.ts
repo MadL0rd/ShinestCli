@@ -1,11 +1,12 @@
-import { Injectable } from '@nestjs/common'
-import { Command, CommandRunner } from 'nest-commander'
-import * as fs from 'fs'
-import chalk from 'chalk'
+import 'reflect-metadata'
 
-import { caseCamel, casePascal, caseKebab } from 'src/utils/case-converter'
-import { runConsoleScript } from 'src/utils/run-console-script'
-import { ensureDirectoryExistence, getDirectories, readFile } from 'src/utils/file-system'
+import * as p from '@clack/prompts'
+import { Injectable } from '@nestjs/common'
+import chalk from 'chalk'
+import * as fs from 'fs/promises'
+import { Command, CommandRunner, Option } from 'nest-commander'
+import path from 'path'
+import { Project } from 'ts-morph'
 import {
     CliConfig,
     CliConfigSchema,
@@ -13,11 +14,26 @@ import {
     OtherSchema,
     UniqueMessagesConfigElement,
     UniqueMessagesConfigSchema,
-} from '../models/cli-config-schema'
-import { textConst } from 'src/utils/constants'
+} from '../models/cli-config-schema.js'
+import { caseCamel, caseKebab, casePascal } from '../utils/case-converter.js'
+import { textConst } from '../utils/constants.js'
+import { ensureDirectoryExistence } from '../utils/file-system.js'
+import { runConsoleScript } from '../utils/run-console-script.js'
+type GenerateCommandOptions = {
+    keepOpen?: boolean
+}
+type Path = {
+    type: 'dir' | 'file'
+    path: string
+}
+type ExtractCases<T, K extends T> = Extract<T, K>
 
 @Injectable()
-@Command({ name: 'generate', aliases: ['g'], description: 'Common file generation command' })
+@Command({
+    name: 'generate',
+    aliases: ['g'],
+    description: 'Common file generation command',
+})
 export class GenerationCommand extends CommandRunner {
     private loading?: {
         start: (msg?: string | undefined) => void
@@ -25,8 +41,22 @@ export class GenerationCommand extends CommandRunner {
         message: (msg?: string | undefined) => void
     }
 
-    async run(): Promise<void> {
-        const p = await import('@clack/prompts')
+    @Option({
+        flags: '-k, --keep-open [keepOpen]',
+        description: 'Keep CLI open after command',
+        name: 'keepOpen',
+    })
+    parseKeepOpen(val?: string): boolean {
+        // --keep-open            -> true
+        // --keep-open false/0/no -> false
+        // --keep-open true/1/yes -> true
+        if (val === undefined) {
+            return true
+        }
+        return /^(1|true|yes|y)$/i.test(val)
+    }
+
+    async run(inputs: string[], options?: GenerateCommandOptions): Promise<void> {
         const sayGoodbye = function () {
             p.outro(chalk.greenBright('Goodbye 👋'))
         }
@@ -34,20 +64,23 @@ export class GenerationCommand extends CommandRunner {
         p.intro(chalk.black.bgHex('ffffff')(textConst.welcome))
 
         const configFilePath = './shinest-cli.json'
-        const configRaw = readFile(configFilePath)
+        const configRaw = await fs.readFile(configFilePath, 'utf8')
         if (!configRaw) throw Error(`Can not read file '${configFilePath}`)
 
         const config = CliConfigSchema.parse(JSON.parse(configRaw))
 
-        const uniqueMessagesGenerationOption = 'uniqueMessages'
-        const nestCliGenOption = 'nestGenerate'
-        const exitOption = 'exit'
+        const optionIds = {
+            uniqueMessages: 'uniqueMessages',
+            nestGenerate: 'nestGenerate',
+            removeSourceCode: 'removeSourceCodeFiles',
+            exit: 'exit',
+        } as const
         const selectedOptionRaw = await p.select({
             message: '🛠 Select generation option',
             initialValue: '1',
             options: [
                 {
-                    value: uniqueMessagesGenerationOption,
+                    value: optionIds.uniqueMessages,
                     label: 'Generate unique messages file',
                     hint: `source: ${config.generationScripts.uniqueMessages.jsonConfigFilePath}`,
                 },
@@ -55,27 +88,48 @@ export class GenerationCommand extends CommandRunner {
                     return { value: option.title }
                 }),
                 {
-                    value: nestCliGenOption,
+                    value: optionIds.removeSourceCode,
+                    label: 'Remove TS source code files',
+                    hint: 'Removes file or all TS files in folder: 1) Recursively get all ts files from folder; 2) Removes all imports of those files; 3) Remove all selected files',
+                },
+                {
+                    value: optionIds.nestGenerate,
                     label: 'Generate with nest cli',
                     hint: 'Call global installed nest cli commands',
                 },
-                { value: exitOption, label: 'Exit' },
+                { value: optionIds.exit, label: 'Exit' },
             ],
         })
 
         try {
             switch (selectedOptionRaw) {
-                case uniqueMessagesGenerationOption:
+                case optionIds.uniqueMessages:
                     await this.generateUniqueMessages(config)
                     await this.formatCodeIfNeeded(config)
                     break
 
-                case nestCliGenOption:
-                    await this.nestGenerate()
-                    await this.formatCodeIfNeeded(config)
-                    return
+                case optionIds.nestGenerate:
+                    if (await this.nestGenerate()) {
+                        await this.formatCodeIfNeeded(config)
+                    }
+                    break
 
-                case exitOption:
+                case optionIds.removeSourceCode:
+                    const filePath = await this.pickPath({
+                        expectedDirType: 'file',
+                    })
+                    if (!filePath) break
+                    const stat = await fs.stat(filePath).catch(() => null)
+                    if (!stat) break
+                    if (stat.isFile()) await this.removeImports([filePath])
+                    else if (stat.isDirectory()) {
+                        const targetFiles = await this.collectFilesRecursive(filePath)
+                        await this.removeImports(targetFiles)
+                    }
+
+                    break
+
+                case optionIds.exit:
                     sayGoodbye()
                     return
 
@@ -97,64 +151,166 @@ export class GenerationCommand extends CommandRunner {
             return
         }
 
-        await sayGoodbye()
+        if (options?.keepOpen) return this.run(inputs, options)
+
+        sayGoodbye()
     }
 
-    private async nestGenerate() {
-        const p = await import('@clack/prompts')
+    private async collectFilesRecursive(dir: string): Promise<string[]> {
+        const result: string[] = []
+        const stack: string[] = [dir]
 
-        // Dir selection
-        let selectedDir: string | undefined
-        const baseDir = './src'
-        let currentPath = baseDir
-        while (!selectedDir) {
-            const dirContent = getDirectories(currentPath)
-            const completeOption = 'complete'
-            const prevDir = '../'
+        while (stack.length > 0) {
+            const currentDir = stack.pop()!
+            const entries = await fs.readdir(currentDir, { withFileTypes: true })
 
-            if (currentPath !== baseDir) dirContent.push(prevDir)
+            for (const entry of entries) {
+                const fullPath = path.join(currentDir, entry.name)
 
-            const selectedDirOption = await p.select({
-                message: `Select generation folder: ${currentPath}`,
-                initialValue: '1',
-                options: [
-                    { value: completeOption, label: `Select current dir`, hint: currentPath },
-                    ...dirContent.map((folder) => {
-                        return folder !== prevDir ? { value: '/' + folder } : { value: folder }
-                    }),
-                ],
-            })
-
-            switch (selectedDirOption) {
-                case prevDir:
-                    const folderNames = currentPath.split('/')
-                    folderNames.pop()
-                    if (folderNames.length == 0) folderNames.push('.')
-                    currentPath = folderNames.join('/')
-                    break
-
-                case completeOption:
-                    selectedDir = currentPath.replace(baseDir, '')
-                    break
-
-                default:
-                    currentPath += String(selectedDirOption)
-                    break
+                if (entry.isDirectory()) {
+                    stack.push(fullPath)
+                } else if (entry.isFile()) {
+                    result.push(fullPath)
+                }
             }
         }
 
-        // Nest cli command selection
-        const options = { mo: 'Module', s: 'Service' } as const
-        const optionsRaw = Object.keys(options) as (keyof typeof options)[]
+        return result
+    }
 
-        const selectedOptionRaw = await p.select({
-            message: 'Select generation source files type',
-            initialValue: '1',
-            options: optionsRaw.map((optionKey) => {
-                return { value: optionKey, label: options[optionKey] }
-            }),
+    async removeImports(filePathsToRemove: string[], baseProjectDir: string = './src') {
+        const getFileName = (filePath: string) =>
+            filePath.split('/').pop()?.split('.').slice(0, -1).join('.') ?? ''
+
+        const filesToRemove = filePathsToRemove.map((filePath) => ({
+            fileName: getFileName(filePath),
+            path: filePath,
+            pathResolved: path.resolve(filePath),
+        }))
+
+        const project = new Project({
+            tsConfigFilePath: 'tsconfig.json',
         })
-        const selectedOption = selectedOptionRaw as keyof typeof options
+        project.addSourceFilesAtPaths(`${baseProjectDir}/**/*.ts`)
+
+        const sourceFiles = project.getSourceFiles()
+
+        type ImportRemovingMetadata = { file: string; removedImports: string[] }
+
+        for (const sourceFile of sourceFiles) {
+            let changed = false
+            const sourceFilePathResolved = sourceFile.getFilePath()
+            if (filesToRemove.some((file) => file.pathResolved === sourceFilePathResolved)) continue
+
+            const importDeclarations = sourceFile.getImportDeclarations()
+            let metadata: ImportRemovingMetadata | undefined
+
+            for (const importDecl of importDeclarations) {
+                const importPath = importDecl.getModuleSpecifierValue()
+                const importPathFileName = getFileName(importPath)
+
+                if (filesToRemove.some((file) => file.fileName === importPathFileName) === false) {
+                    continue
+                }
+
+                const importPathResolved = await this.resolveImportToAbsolutePath(
+                    importPath,
+                    sourceFilePathResolved
+                )
+                if (!importPathResolved) continue
+
+                if (filesToRemove.some((file) => file.pathResolved === importPathResolved)) {
+                    importDecl.remove()
+                    changed = true
+
+                    if (!metadata) {
+                        metadata = {
+                            file: sourceFilePathResolved,
+                            removedImports: [importPathResolved],
+                        }
+                    } else {
+                        metadata.removedImports.push(importPathResolved)
+                    }
+                }
+            }
+
+            if (changed) await sourceFile.save()
+            if (metadata) {
+                console.log(
+                    [
+                        '',
+                        `⚠️  Imports removed from '${chalk.green(metadata.file)}':`,
+                        metadata.removedImports
+                            .map((item) => chalk.blue(`▶︎\t${item}`))
+                            .join('\n'),
+                    ].join('\n') + '\n'
+                )
+            }
+        }
+    }
+
+    private async resolveImportToAbsolutePath(
+        importPath: string,
+        sourceFilePath: string
+    ): Promise<string | null> {
+        if (!importPath.startsWith('.')) return null
+
+        const sourceDir = path.dirname(sourceFilePath)
+        const basePath = path.resolve(sourceDir, importPath)
+
+        const resolved = await this.tryResolveFile(basePath)
+        if (resolved) return resolved
+
+        const indexResolved = this.tryResolveFile(path.join(basePath, 'index'))
+        if (indexResolved) return indexResolved
+
+        return null
+    }
+
+    private async tryResolveFile(basePath: string): Promise<string | null> {
+        const extensions = ['.ts', '.tsx', '.js', '.jsx']
+
+        basePath = extensions.reduce((acc, ext) => {
+            return acc.replace(ext, '')
+        }, basePath)
+        for (const ext of extensions) {
+            const filePath = basePath + ext
+            const stat = await fs.stat(filePath).catch(() => null)
+            if (stat?.isFile()) return filePath
+        }
+        return null
+    }
+
+    private async nestGenerate(dir?: string, option?: 'mo' | 's'): Promise<boolean> {
+        // Dir selection
+        let selectedDir = dir
+            ? option
+                ? dir
+                : await this.pickPath({
+                      expectedDirType: 'folder',
+                      currentPath: dir,
+                  })
+            : await this.pickPath({
+                  expectedDirType: 'folder',
+              })
+        if (!selectedDir) return false
+
+        // Nest cli command selection
+        const selectedOption = await p.select<'s' | 'mo'>({
+            message: 'Select generation source files type',
+            initialValue: 's',
+            options: [
+                {
+                    value: 's',
+                    label: 'Service',
+                },
+                {
+                    value: 'mo',
+                    label: 'Module',
+                },
+            ],
+        })
+        if (p.isCancel(selectedOption)) return this.nestGenerate(selectedDir)
 
         // Name input
         let name: string | undefined
@@ -162,6 +318,7 @@ export class GenerationCommand extends CommandRunner {
             const input = await p.text({
                 message: 'Enter name in any case',
             })
+            if (p.isCancel(input)) return this.nestGenerate(selectedDir, selectedOption)
             name = String(input)
         }
         name = caseKebab(name)
@@ -179,12 +336,128 @@ export class GenerationCommand extends CommandRunner {
         // Command call
         p.note(command, 'Result command:')
         await runConsoleScript(command, true)
+        return true
+    }
+
+    private async pickPath(args: {
+        expectedDirType: 'file' | 'folder' | 'fileOrFolder'
+        baseDir?: string
+        currentPath?: string
+    }): Promise<string | false> {
+        const { expectedDirType } = args
+        const baseDir = args.baseDir ?? './src'
+        let currentPath = args.currentPath ?? baseDir
+        let selectedPath: string | undefined
+        let initialOption: string | undefined
+        {
+            const stat = await fs.stat(currentPath)
+            if (stat.isFile()) {
+                const parts = currentPath.split('/')
+                initialOption = '/' + parts.pop()
+                if (parts.length === 0) parts.push('.')
+                currentPath = parts.join('/')
+            }
+        }
+
+        const colorByItemType: Record<
+            Path['type'],
+            ExtractCases<keyof typeof chalk, 'yellowBright' | 'greenBright' | 'blueBright'>
+        > = {
+            dir: 'blueBright',
+            file: 'greenBright',
+        }
+        const labelPrefixByItemType: Record<Path['type'], string> = {
+            dir: '📂',
+            file: '📑',
+        }
+
+        while (!selectedPath) {
+            let dirContent = await this.getDirContent(currentPath)
+            if (expectedDirType === 'folder') {
+                dirContent = dirContent.filter((value) => value.type !== 'file')
+            }
+
+            const prevDir = '../'
+            const optionSelectCurrentFolder = 'optionSelectCurrentFolder'
+
+            const options: p.Option<string>[] = [
+                currentPath === baseDir
+                    ? null
+                    : {
+                          value: prevDir,
+                          label: chalk.yellow(`▲ ${prevDir}`),
+                      },
+
+                expectedDirType === 'file'
+                    ? null
+                    : {
+                          value: optionSelectCurrentFolder,
+                          label: 'Select current folder',
+                          hint: currentPath,
+                      },
+
+                ...dirContent.map((item) => ({
+                    value: '/' + item.path,
+                    label: [
+                        labelPrefixByItemType[item.type],
+                        chalk[colorByItemType[item.type]](item.path),
+                    ].join(' '),
+                })),
+            ].filter((value) => value !== null)
+
+            const selectedOption = await p.select({
+                message: `Directory selection\nCurrent path: ${chalk.greenBright(currentPath)}`,
+                initialValue:
+                    initialOption ??
+                    (expectedDirType === 'file'
+                        ? dirContent[0]
+                            ? '/' + dirContent[0].path
+                            : prevDir
+                        : optionSelectCurrentFolder),
+                options,
+            })
+            initialOption = undefined
+
+            if (p.isCancel(selectedOption) || selectedOption === prevDir) {
+                if (currentPath === baseDir) return false
+                const parts = currentPath.split('/')
+                parts.pop()
+                if (parts.length === 0) parts.push('.')
+                currentPath = parts.join('/')
+                continue
+            } else if (expectedDirType !== 'file' && selectedOption === optionSelectCurrentFolder) {
+                const stat = await fs.stat(currentPath)
+                if (expectedDirType === 'fileOrFolder' || stat.isDirectory()) {
+                    selectedPath = currentPath.replace(baseDir, '')
+                }
+            } else {
+                currentPath += String(selectedOption)
+                if (expectedDirType !== 'folder') {
+                    const stat = await fs.stat(currentPath)
+                    if (stat.isFile()) return currentPath
+                }
+            }
+        }
+
+        return selectedPath
+    }
+
+    private getDirContent(path: string): Promise<Path[]> {
+        return fs.readdir(path, { withFileTypes: true }).then((items) => {
+            const content = items.map(
+                (item) => ({ type: item.isFile() ? 'file' : 'dir', path: item.name }) satisfies Path
+            )
+            content.sort((x1, x2) => x1.path.localeCompare(x2.path))
+            return [
+                ...content.filter((item) => item.type === 'dir'),
+                ...content.filter((item) => item.type === 'file'),
+            ]
+        })
     }
 
     private async formatCodeIfNeeded(config: CliConfig) {
         if (!config.format.applyOnCommandsCompletion || !config.format.scrypt) return
 
-        const p = await import('@clack/prompts')
         this.loading = p.spinner()
         this.loading.start('✨ Formatting in progress...')
         await runConsoleScript(config.format.scrypt)
@@ -192,13 +465,13 @@ export class GenerationCommand extends CommandRunner {
     }
 
     private async generateCustomFile(config: Other, commonConfig: CliConfig) {
-        const p = await import('@clack/prompts')
         let name: string | undefined
 
         while (!name || name === 'undefined' || name.length < 3) {
             const input = await p.text({
                 message: config.nameQuestion,
             })
+            if (p.isCancel(input)) return
             name = String(input)
         }
 
@@ -221,7 +494,7 @@ export class GenerationCommand extends CommandRunner {
 
         // Create files
         for (const file of config.createFiles) {
-            const contentRaw = readFile(file.templateFile)
+            const contentRaw = await fs.readFile(file.templateFile, 'utf8')
             if (!contentRaw) throw Error(`Can not read file '${file.templateFile}`)
 
             const content = contentRaw
@@ -230,22 +503,24 @@ export class GenerationCommand extends CommandRunner {
                 .replaceAll(placeholders.caseKebab, names.caseKebab)
 
             ensureDirectoryExistence(file.resultSourceCodeFilePath)
-            fs.writeFileSync(file.resultSourceCodeFilePath, content, 'utf8')
+            await fs.writeFile(file.resultSourceCodeFilePath, content, 'utf8')
         }
 
         // Update imports etc.
         for (const replacement of config.replacements) {
-            const contentRaw = readFile(replacement.filePath)
+            const contentRaw = fs.readFile(replacement.filePath)
             if (!contentRaw) {
                 throw Error(`Can not read file '${replacement.filePath}`)
                 return
             }
 
-            const content = fs
-                .readFileSync(replacement.filePath, 'utf8')
-                .replaceAll(replacement.placeholder, replacement.replaceWith)
+            const content = await fs
+                .readFile(replacement.filePath, 'utf8')
+                .then((content) =>
+                    content.replaceAll(replacement.placeholder, replacement.replaceWith)
+                )
 
-            fs.writeFileSync(replacement.filePath, content, 'utf8')
+            await fs.writeFile(replacement.filePath, content, 'utf8')
         }
 
         const createdFiles = config.createFiles
@@ -268,7 +543,6 @@ export class GenerationCommand extends CommandRunner {
 
     private async generateUniqueMessages(config: CliConfig) {
         const configUnique = config.generationScripts.uniqueMessages
-        const p = await import('@clack/prompts')
         this.loading = p.spinner()
         this.loading.start('Unique messages caching in progress...')
 
@@ -279,7 +553,7 @@ export class GenerationCommand extends CommandRunner {
         this.loading = p.spinner()
         this.loading.start('Generating source code')
 
-        const jsonString = readFile(configUnique.jsonConfigFilePath)
+        const jsonString = await fs.readFile(configUnique.jsonConfigFilePath, 'utf8')
         if (!jsonString) throw Error(`Can not read file '${configUnique.jsonConfigFilePath}`)
 
         const uniqueMessagesJson = JSON.parse(jsonString)
@@ -390,7 +664,7 @@ export class GenerationCommand extends CommandRunner {
         }
 
         ensureDirectoryExistence(configUnique.resultSourceCodeFilePath)
-        fs.writeFileSync(configUnique.resultSourceCodeFilePath, sourceCode, 'utf8')
+        await fs.writeFile(configUnique.resultSourceCodeFilePath, sourceCode, 'utf8')
         this.loading.stop(
             `Source code generated: ${chalk.blue(configUnique.resultSourceCodeFilePath)}`
         )

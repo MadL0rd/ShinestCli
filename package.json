@@ -1,9 +1,10 @@
 {
   "name": "@madl0rd/shinest-cli",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "description": "CLI for ShinestBot envieronment",
   "author": "MadL0rd",
   "license": "MIT",
+  "type": "module",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MadL0rd/ShinestCli"
@@ -19,23 +20,24 @@
     "shinest": "dist/main.js"
   },
   "scripts": {
-    "build": "nest build",
+    "build": "nest build && tsc-alias",
     "format": "prettier --write \"src/**/*.ts\"",
     "start": "nest start -- g",
     "start:dev": "nest start --watch -- g",
-    "start:debug": "env-cmd -f ./.env nest start --debug --watch -- g",
+    "start:debug": "nest start --debug --watch --",
     "start:prod": "node dist/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix"
   },
   "dependencies": {
-    "@clack/prompts": "^0.7.0",
+    "@clack/prompts": "^0.11.0",
     "@nestjs/common": "^11.0.0",
     "nest-commander": "^3.0.0",
+    "ts-morph": "^26.0.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@total-typescript/ts-reset": "^0.5.1",
-    "@types/node": "^20.12.7",
+    "@total-typescript/ts-reset": "^0.6.1",
+    "@types/node": "^24.3.1",
     "@types/node-fetch": "^2.6.11",
     "@types/supertest": "^6.0.0",
     "@typescript-eslint/eslint-plugin": "^8.22.0",
