@@ -3,6 +3,7 @@ import 'reflect-metadata'
 import * as p from '@clack/prompts'
 import { Injectable } from '@nestjs/common'
 import chalk from 'chalk'
+import { statSync } from 'fs'
 import * as fs from 'fs/promises'
 import { Command, CommandRunner, Option } from 'nest-commander'
 import path from 'path'
@@ -21,14 +22,13 @@ import { ensureDirectoryExistence } from '../utils/file-system.js'
 import { runConsoleScript } from '../utils/run-console-script.js'
 type GenerateCommandOptions = {
     keepOpen?: boolean
+    workDir: string
 }
 type Path = {
     type: 'dir' | 'file'
     path: string
 }
 type ExtractCases<T, K extends T> = Extract<T, K>
-
-const baseDirectory = './src'
 
 const extensions = ['.ts', '.tsx', '.js', '.jsx']
 const removeExtensions = (path: string) =>
@@ -43,6 +43,8 @@ const removeExtensions = (path: string) =>
     description: 'Common file generation command',
 })
 export class GenerationCommand extends CommandRunner {
+    private workDir: string
+
     private loading?: {
         start: (msg?: string | undefined) => void
         stop: (msg?: string | undefined, code?: number | undefined) => void
@@ -64,7 +66,24 @@ export class GenerationCommand extends CommandRunner {
         return /^(1|true|yes|y)$/i.test(val)
     }
 
+    @Option({
+        flags: '--work-dir [keepOpen]',
+        description: 'Set base work directory',
+        name: 'workDir',
+    })
+    parseWorkDir(value?: string): string {
+        if (value) {
+            const dir = path.resolve(value)
+            const stat = statSync(dir)
+            if (stat?.isDirectory()) return dir
+        }
+
+        return path.resolve('./')
+    }
+
     async run(inputs: string[], options?: GenerateCommandOptions): Promise<void> {
+        this.workDir = options?.workDir ?? this.parseWorkDir()
+
         const sayGoodbye = function () {
             p.outro(chalk.greenBright('Goodbye 👋'))
         }
@@ -181,7 +200,7 @@ export class GenerationCommand extends CommandRunner {
         return result
     }
 
-    async removeImports(targetPath: string, baseProjectDir: string = baseDirectory) {
+    async removeImports(targetPath: string, baseProjectDir: string = this.workDir) {
         const targetPathStat = await fs.stat(targetPath).catch((e) => console.error(e))
         if (!targetPathStat) return
 
@@ -230,6 +249,10 @@ export class GenerationCommand extends CommandRunner {
             const sourceFilePathResolved = sourceFile.getFilePath()
 
             if (filesToRemove.some((file) => file.pathResolved === sourceFilePathResolved)) continue
+
+            if (sourceFilePathResolved.endsWith('self-employed-phone-number-check.service.ts')) {
+                console.log('test')
+            }
 
             const importDeclarations = sourceFile.getImportDeclarations()
 
@@ -321,7 +344,7 @@ export class GenerationCommand extends CommandRunner {
         importPath: string,
         sourceFilePath: string
     ): Promise<string | null> {
-        if (importPath.startsWith('src')) importPath = importPath.replace('src', baseDirectory)
+        if (importPath.startsWith('src')) importPath = importPath.replace('src', this.workDir)
 
         const sourceDir = path.dirname(sourceFilePath)
         const basePath = path.resolve(sourceDir, importPath)
@@ -409,7 +432,7 @@ export class GenerationCommand extends CommandRunner {
         currentPath?: string
     }): Promise<string | false> {
         const { expectedDirType } = args
-        const baseDir = args.baseDir ?? baseDirectory
+        const baseDir = args.baseDir ?? this.workDir
         let currentPath = args.currentPath ?? baseDir
         let selectedPath: string | undefined
         let initialOption: string | undefined
@@ -498,14 +521,19 @@ export class GenerationCommand extends CommandRunner {
                 currentPath += String(selectedOption)
                 if (expectedDirType !== 'folder') {
                     const stat = await fs.stat(currentPath)
-                    if (stat.isFile()) return currentPath
+                    if (stat.isFile()) selectedPath = currentPath
                 }
             }
         }
 
-        return path.resolve(selectedPath)
+        const pathResolved = path.resolve(selectedPath)
+        return pathResolved
     }
 
+    /**
+     * @param path file system path
+     * @returns file names and dirs names array sorted by type then by name
+     */
     private getDirContent(path: string): Promise<Path[]> {
         return fs.readdir(path, { withFileTypes: true }).then((items) => {
             const content = items.map(
