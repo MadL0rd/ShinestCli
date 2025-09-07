@@ -249,10 +249,6 @@ export class GenerationCommand extends CommandRunner {
 
             if (filesToRemove.some((file) => file.pathResolved === sourceFilePathResolved)) continue
 
-            if (sourceFilePathResolved.endsWith('self-employed-phone-number-check.service.ts')) {
-                console.log('test')
-            }
-
             const importDeclarations = sourceFile.getImportDeclarations()
 
             for (const importDecl of importDeclarations) {
