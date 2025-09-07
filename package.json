@@ -7,7 +7,7 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MadL0rd/ShinestCli"
+    "url": "git+https://github.com/MadL0rd/ShinestCli.git"
   },
   "homepage": "https://github.com/MadL0rd/ShinestCli",
   "publishConfig": {
