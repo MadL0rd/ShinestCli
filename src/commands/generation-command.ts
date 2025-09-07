@@ -82,8 +82,6 @@ export class GenerationCommand extends CommandRunner {
     }
 
     async run(inputs: string[], options?: GenerateCommandOptions): Promise<void> {
-        this.workDir = options?.workDir ?? this.parseWorkDir()
-
         const sayGoodbye = function () {
             p.outro(chalk.greenBright('Goodbye 👋'))
         }
@@ -95,6 +93,7 @@ export class GenerationCommand extends CommandRunner {
         if (!configRaw) throw Error(`Can not read file '${configFilePath}`)
 
         const config = CliConfigSchema.parse(JSON.parse(configRaw))
+        this.workDir = options?.workDir ?? this.parseWorkDir(config.baseDir)
 
         const optionIds = {
             uniqueMessages: 'uniqueMessages',
