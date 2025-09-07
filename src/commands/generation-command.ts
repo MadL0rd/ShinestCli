@@ -5,6 +5,8 @@ import { Injectable } from '@nestjs/common'
 import chalk from 'chalk'
 import * as fs from 'fs/promises'
 import { Command, CommandRunner, Option } from 'nest-commander'
+import path from 'path'
+import { Project } from 'ts-morph'
 import {
     CliConfig,
     CliConfigSchema,
@@ -17,7 +19,6 @@ import { caseCamel, caseKebab, casePascal } from '../utils/case-converter.js'
 import { textConst } from '../utils/constants.js'
 import { ensureDirectoryExistence } from '../utils/file-system.js'
 import { runConsoleScript } from '../utils/run-console-script.js'
-
 type GenerateCommandOptions = {
     keepOpen?: boolean
 }
@@ -31,7 +32,6 @@ type ExtractCases<T, K extends T> = Extract<T, K>
 @Command({
     name: 'generate',
     aliases: ['g'],
-    options: { isDefault: true },
     description: 'Common file generation command',
 })
 export class GenerationCommand extends CommandRunner {
@@ -57,7 +57,6 @@ export class GenerationCommand extends CommandRunner {
     }
 
     async run(inputs: string[], options?: GenerateCommandOptions): Promise<void> {
-        await runConsoleScript('clear')
         const sayGoodbye = function () {
             p.outro(chalk.greenBright('Goodbye 👋'))
         }
@@ -70,15 +69,18 @@ export class GenerationCommand extends CommandRunner {
 
         const config = CliConfigSchema.parse(JSON.parse(configRaw))
 
-        const uniqueMessagesGenerationOption = 'uniqueMessages'
-        const nestCliGenOption = 'nestGenerate'
-        const exitOption = 'exit'
+        const optionIds = {
+            uniqueMessages: 'uniqueMessages',
+            nestGenerate: 'nestGenerate',
+            removeSourceCode: 'removeSourceCodeFiles',
+            exit: 'exit',
+        } as const
         const selectedOptionRaw = await p.select({
             message: '🛠 Select generation option',
             initialValue: '1',
             options: [
                 {
-                    value: uniqueMessagesGenerationOption,
+                    value: optionIds.uniqueMessages,
                     label: 'Generate unique messages file',
                     hint: `source: ${config.generationScripts.uniqueMessages.jsonConfigFilePath}`,
                 },
@@ -86,28 +88,48 @@ export class GenerationCommand extends CommandRunner {
                     return { value: option.title }
                 }),
                 {
-                    value: nestCliGenOption,
+                    value: optionIds.removeSourceCode,
+                    label: 'Remove TS source code files',
+                    hint: 'Removes file or all TS files in folder: 1) Recursively get all ts files from folder; 2) Removes all imports of those files; 3) Remove all selected files',
+                },
+                {
+                    value: optionIds.nestGenerate,
                     label: 'Generate with nest cli',
                     hint: 'Call global installed nest cli commands',
                 },
-                { value: exitOption, label: 'Exit' },
+                { value: optionIds.exit, label: 'Exit' },
             ],
         })
 
         try {
             switch (selectedOptionRaw) {
-                case uniqueMessagesGenerationOption:
+                case optionIds.uniqueMessages:
                     await this.generateUniqueMessages(config)
                     await this.formatCodeIfNeeded(config)
                     break
 
-                case nestCliGenOption:
+                case optionIds.nestGenerate:
                     if (await this.nestGenerate()) {
                         await this.formatCodeIfNeeded(config)
                     }
                     break
 
-                case exitOption:
+                case optionIds.removeSourceCode:
+                    const filePath = await this.pickPath({
+                        expectedDirType: 'file',
+                    })
+                    if (!filePath) break
+                    const stat = await fs.stat(filePath).catch(() => null)
+                    if (!stat) break
+                    if (stat.isFile()) await this.removeImports([filePath])
+                    else if (stat.isDirectory()) {
+                        const targetFiles = await this.collectFilesRecursive(filePath)
+                        await this.removeImports(targetFiles)
+                    }
+
+                    break
+
+                case optionIds.exit:
                     sayGoodbye()
                     return
 
@@ -132,6 +154,131 @@ export class GenerationCommand extends CommandRunner {
         if (options?.keepOpen) return this.run(inputs, options)
 
         sayGoodbye()
+    }
+
+    private async collectFilesRecursive(dir: string): Promise<string[]> {
+        const result: string[] = []
+        const stack: string[] = [dir]
+
+        while (stack.length > 0) {
+            const currentDir = stack.pop()!
+            const entries = await fs.readdir(currentDir, { withFileTypes: true })
+
+            for (const entry of entries) {
+                const fullPath = path.join(currentDir, entry.name)
+
+                if (entry.isDirectory()) {
+                    stack.push(fullPath)
+                } else if (entry.isFile()) {
+                    result.push(fullPath)
+                }
+            }
+        }
+
+        return result
+    }
+
+    async removeImports(filePathsToRemove: string[], baseProjectDir: string = './src') {
+        const getFileName = (filePath: string) =>
+            filePath.split('/').pop()?.split('.').slice(0, -1).join('.') ?? ''
+
+        const filesToRemove = filePathsToRemove.map((filePath) => ({
+            fileName: getFileName(filePath),
+            path: filePath,
+            pathResolved: path.resolve(filePath),
+        }))
+
+        const project = new Project({
+            tsConfigFilePath: 'tsconfig.json',
+        })
+        project.addSourceFilesAtPaths(`${baseProjectDir}/**/*.ts`)
+
+        const sourceFiles = project.getSourceFiles()
+
+        type ImportRemovingMetadata = { file: string; removedImports: string[] }
+
+        for (const sourceFile of sourceFiles) {
+            let changed = false
+            const sourceFilePathResolved = sourceFile.getFilePath()
+            if (filesToRemove.some((file) => file.pathResolved === sourceFilePathResolved)) continue
+
+            const importDeclarations = sourceFile.getImportDeclarations()
+            let metadata: ImportRemovingMetadata | undefined
+
+            for (const importDecl of importDeclarations) {
+                const importPath = importDecl.getModuleSpecifierValue()
+                const importPathFileName = getFileName(importPath)
+
+                if (filesToRemove.some((file) => file.fileName === importPathFileName) === false) {
+                    continue
+                }
+
+                const importPathResolved = await this.resolveImportToAbsolutePath(
+                    importPath,
+                    sourceFilePathResolved
+                )
+                if (!importPathResolved) continue
+
+                if (filesToRemove.some((file) => file.pathResolved === importPathResolved)) {
+                    importDecl.remove()
+                    changed = true
+
+                    if (!metadata) {
+                        metadata = {
+                            file: sourceFilePathResolved,
+                            removedImports: [importPathResolved],
+                        }
+                    } else {
+                        metadata.removedImports.push(importPathResolved)
+                    }
+                }
+            }
+
+            if (changed) await sourceFile.save()
+            if (metadata) {
+                console.log(
+                    [
+                        '',
+                        `⚠️  Imports removed from '${chalk.green(metadata.file)}':`,
+                        metadata.removedImports
+                            .map((item) => chalk.blue(`▶︎\t${item}`))
+                            .join('\n'),
+                    ].join('\n') + '\n'
+                )
+            }
+        }
+    }
+
+    private async resolveImportToAbsolutePath(
+        importPath: string,
+        sourceFilePath: string
+    ): Promise<string | null> {
+        if (!importPath.startsWith('.')) return null
+
+        const sourceDir = path.dirname(sourceFilePath)
+        const basePath = path.resolve(sourceDir, importPath)
+
+        const resolved = await this.tryResolveFile(basePath)
+        if (resolved) return resolved
+
+        const indexResolved = this.tryResolveFile(path.join(basePath, 'index'))
+        if (indexResolved) return indexResolved
+
+        return null
+    }
+
+    private async tryResolveFile(basePath: string): Promise<string | null> {
+        const extensions = ['.ts', '.tsx', '.js', '.jsx']
+
+        basePath = extensions.reduce((acc, ext) => {
+            return acc.replace(ext, '')
+        }, basePath)
+        for (const ext of extensions) {
+            const filePath = basePath + ext
+            const stat = await fs.stat(filePath).catch(() => null)
+            if (stat?.isFile()) return filePath
+        }
+        return null
     }
 
     private async nestGenerate(dir?: string, option?: 'mo' | 's'): Promise<boolean> {
