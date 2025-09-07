@@ -116,7 +116,7 @@ export class GenerationCommand extends CommandRunner {
 
                 case optionIds.removeSourceCode:
                     const filePath = await this.pickPath({
-                        expectedDirType: 'file',
+                        expectedDirType: 'fileOrFolder',
                     })
                     if (!filePath) break
                     const stat = await fs.stat(filePath).catch(() => null)
