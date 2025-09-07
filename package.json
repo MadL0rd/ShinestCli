@@ -1,13 +1,13 @@
 {
   "name": "@madl0rd/shinest-cli",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "CLI for ShinestBot envieronment",
   "author": "MadL0rd",
   "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MadL0rd/ShinestCli"
+    "url": "git+https://github.com/MadL0rd/ShinestCli.git"
   },
   "homepage": "https://github.com/MadL0rd/ShinestCli",
   "publishConfig": {
@@ -20,7 +20,7 @@
     "shinest": "dist/main.js"
   },
   "scripts": {
-    "build": "nest build && tsc-alias",
+    "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\"",
     "start": "nest start -- g",
     "start:dev": "nest start --watch -- g",
