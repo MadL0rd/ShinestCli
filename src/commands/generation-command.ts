@@ -28,6 +28,14 @@ type Path = {
 }
 type ExtractCases<T, K extends T> = Extract<T, K>
 
+const baseDirectory = './src'
+
+const extensions = ['.ts', '.tsx', '.js', '.jsx']
+const removeExtensions = (path: string) =>
+    extensions.reduce((acc, ext) => {
+        return acc.replace(ext, '')
+    }, path)
+
 @Injectable()
 @Command({
     name: 'generate',
@@ -115,17 +123,12 @@ export class GenerationCommand extends CommandRunner {
                     break
 
                 case optionIds.removeSourceCode:
-                    const filePath = await this.pickPath({
+                    let filePath = await this.pickPath({
                         expectedDirType: 'fileOrFolder',
                     })
                     if (!filePath) break
-                    const stat = await fs.stat(filePath).catch(() => null)
-                    if (!stat) break
-                    if (stat.isFile()) await this.removeImports([filePath])
-                    else if (stat.isDirectory()) {
-                        const targetFiles = await this.collectFilesRecursive(filePath)
-                        await this.removeImports(targetFiles)
-                    }
+                    filePath = filePath
+                    await this.removeImports(filePath)
 
                     break
 
@@ -178,15 +181,38 @@ export class GenerationCommand extends CommandRunner {
         return result
     }
 
-    async removeImports(filePathsToRemove: string[], baseProjectDir: string = './src') {
-        const getFileName = (filePath: string) =>
-            filePath.split('/').pop()?.split('.').slice(0, -1).join('.') ?? ''
+    async removeImports(targetPath: string, baseProjectDir: string = baseDirectory) {
+        const targetPathStat = await fs.stat(targetPath).catch((e) => console.error(e))
+        if (!targetPathStat) return
+
+        const filePathsToRemove: string[] = targetPathStat.isFile()
+            ? [targetPath]
+            : targetPathStat.isDirectory()
+              ? await this.collectFilesRecursive(targetPath)
+              : []
+
+        const getFileName = (filePath: string) => {
+            const lastPathComponent = filePath.split('/').pop()
+            return lastPathComponent ? removeExtensions(lastPathComponent) : ''
+        }
 
         const filesToRemove = filePathsToRemove.map((filePath) => ({
             fileName: getFileName(filePath),
             path: filePath,
             pathResolved: path.resolve(filePath),
         }))
+        {
+            const indexFolderFile = filesToRemove.find((file) => file.fileName?.startsWith('index'))
+            if (indexFolderFile) {
+                const pathComponents = indexFolderFile.pathResolved.split('/').slice(0, -1)
+                const folder = pathComponents.join('/')
+                filesToRemove.push({
+                    fileName: pathComponents[pathComponents.length - 1],
+                    path: folder,
+                    pathResolved: folder,
+                })
+            }
+        }
 
         const project = new Project({
             tsConfigFilePath: 'tsconfig.json',
@@ -195,15 +221,17 @@ export class GenerationCommand extends CommandRunner {
 
         const sourceFiles = project.getSourceFiles()
 
-        type ImportRemovingMetadata = { file: string; removedImports: string[] }
+        type RemovedImportFullPath = string
+        type FilesWhereImportWasRemoved = { path: string; imports: string[] }[]
+        const metadata: Map<RemovedImportFullPath, FilesWhereImportWasRemoved> = new Map()
 
         for (const sourceFile of sourceFiles) {
             let changed = false
             const sourceFilePathResolved = sourceFile.getFilePath()
+
             if (filesToRemove.some((file) => file.pathResolved === sourceFilePathResolved)) continue
 
             const importDeclarations = sourceFile.getImportDeclarations()
-            let metadata: ImportRemovingMetadata | undefined
 
             for (const importDecl of importDeclarations) {
                 const importPath = importDecl.getModuleSpecifierValue()
@@ -220,32 +248,72 @@ export class GenerationCommand extends CommandRunner {
                 if (!importPathResolved) continue
 
                 if (filesToRemove.some((file) => file.pathResolved === importPathResolved)) {
+                    const importingEntities = [
+                        importDecl.getDefaultImport()?.getText(),
+                        importDecl.getNamedImports().map((named) => named.getName()),
+                    ].filter(Boolean) as string[]
+
                     importDecl.remove()
                     changed = true
 
-                    if (!metadata) {
-                        metadata = {
-                            file: sourceFilePathResolved,
-                            removedImports: [importPathResolved],
-                        }
+                    if (!metadata.has(importPathResolved)) {
+                        metadata.set(importPathResolved, [
+                            {
+                                path: sourceFilePathResolved,
+                                imports: importingEntities,
+                            },
+                        ])
                     } else {
-                        metadata.removedImports.push(importPathResolved)
+                        metadata.get(importPathResolved)?.push({
+                            path: sourceFilePathResolved,
+                            imports: importingEntities,
+                        })
                     }
                 }
             }
 
             if (changed) await sourceFile.save()
-            if (metadata) {
-                console.log(
-                    [
-                        '',
-                        `⚠️  Imports removed from '${chalk.green(metadata.file)}':`,
-                        metadata.removedImports
-                            .map((item) => chalk.blue(`▶︎\t${item}`))
-                            .join('\n'),
-                    ].join('\n') + '\n'
-                )
-            }
+        }
+
+        for (const fileToRemovePath of metadata.keys()) {
+            const removedImports = metadata.get(fileToRemovePath)
+            if (!removedImports) continue
+            removedImports.sort()
+            console.log(
+                [
+                    '',
+                    `⚠️  Imports of '${chalk.green(fileToRemovePath)}' removed from:`,
+                    removedImports
+                        .map((item) =>
+                            [
+                                item.imports.length > 0
+                                    ? chalk.gray(`\t▼ { ${item.imports.join(', ')} }`)
+                                    : null,
+                                chalk.blue(`▶︎\t${item.path}`),
+                            ]
+                                .filter(Boolean)
+                                .join('\n')
+                        )
+                        .join('\n'),
+                ].join('\n')
+            )
+        }
+
+        await fs.rm(targetPath, { recursive: true, force: true })
+        if (targetPathStat.isFile()) {
+            console.log(`\n⚠️ Removed file:\n${chalk.blue('▶︎\t' + targetPath)}`)
+        } else {
+            console.log(
+                [
+                    '',
+                    '⚠️ Removed directory:',
+                    targetPath,
+                    '',
+                    'Removed files:',
+                    filePathsToRemove.map((item) => chalk.blue(`▶︎\t${item}`)).join('\n'),
+                    '',
+                ].join('\n')
+            )
         }
     }
 
@@ -253,7 +321,7 @@ export class GenerationCommand extends CommandRunner {
         importPath: string,
         sourceFilePath: string
     ): Promise<string | null> {
-        if (!importPath.startsWith('.')) return null
+        if (importPath.startsWith('src')) importPath = importPath.replace('src', baseDirectory)
 
         const sourceDir = path.dirname(sourceFilePath)
         const basePath = path.resolve(sourceDir, importPath)
@@ -268,11 +336,7 @@ export class GenerationCommand extends CommandRunner {
     }
 
     private async tryResolveFile(basePath: string): Promise<string | null> {
-        const extensions = ['.ts', '.tsx', '.js', '.jsx']
-
-        basePath = extensions.reduce((acc, ext) => {
-            return acc.replace(ext, '')
-        }, basePath)
+        basePath = removeExtensions(basePath)
         for (const ext of extensions) {
             const filePath = basePath + ext
             const stat = await fs.stat(filePath).catch(() => null)
@@ -345,7 +409,7 @@ export class GenerationCommand extends CommandRunner {
         currentPath?: string
     }): Promise<string | false> {
         const { expectedDirType } = args
-        const baseDir = args.baseDir ?? './src'
+        const baseDir = args.baseDir ?? baseDirectory
         let currentPath = args.currentPath ?? baseDir
         let selectedPath: string | undefined
         let initialOption: string | undefined
@@ -428,7 +492,7 @@ export class GenerationCommand extends CommandRunner {
             } else if (expectedDirType !== 'file' && selectedOption === optionSelectCurrentFolder) {
                 const stat = await fs.stat(currentPath)
                 if (expectedDirType === 'fileOrFolder' || stat.isDirectory()) {
-                    selectedPath = currentPath.replace(baseDir, '')
+                    selectedPath = currentPath
                 }
             } else {
                 currentPath += String(selectedOption)
@@ -439,7 +503,7 @@ export class GenerationCommand extends CommandRunner {
             }
         }
 
-        return selectedPath
+        return path.resolve(selectedPath)
     }
 
     private getDirContent(path: string): Promise<Path[]> {
