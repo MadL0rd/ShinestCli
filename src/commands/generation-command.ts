@@ -15,12 +15,17 @@ import {
 } from '../models/cli-config-schema.js'
 import { caseCamel, caseKebab, casePascal } from '../utils/case-converter.js'
 import { textConst } from '../utils/constants.js'
-import { ensureDirectoryExistence, getDirectories } from '../utils/file-system.js'
+import { ensureDirectoryExistence } from '../utils/file-system.js'
 import { runConsoleScript } from '../utils/run-console-script.js'
 
 type GenerateCommandOptions = {
     keepOpen?: boolean
 }
+type Path = {
+    type: 'dir' | 'file'
+    path: string
+}
+type ExtractCases<T, K extends T> = Extract<T, K>
 
 @Injectable()
 @Command({
@@ -129,61 +134,36 @@ export class GenerationCommand extends CommandRunner {
         sayGoodbye()
     }
 
-    private async nestGenerate(): Promise<boolean> {
+    private async nestGenerate(dir?: string, option?: 'mo' | 's'): Promise<boolean> {
         // Dir selection
-        let selectedDir: string | undefined
-        const baseDir = './src'
-        let currentPath = baseDir
-        while (!selectedDir) {
-            const dirContent = getDirectories(currentPath)
-            const completeOption = 'complete'
-            const prevDir = '../'
-
-            if (currentPath !== baseDir) dirContent.push(prevDir)
-
-            const selectedDirOption = await p.select({
-                message: `Select generation folder: ${currentPath}`,
-                initialValue: '1',
-                options: [
-                    { value: completeOption, label: `Select current dir`, hint: currentPath },
-                    ...dirContent.map((folder) => {
-                        return folder !== prevDir ? { value: '/' + folder } : { value: folder }
-                    }),
-                ],
-            })
-
-            if (p.isCancel(selectedDirOption)) return false
-
-            switch (selectedDirOption) {
-                case prevDir:
-                    const folderNames = currentPath.split('/')
-                    folderNames.pop()
-                    if (folderNames.length == 0) folderNames.push('.')
-                    currentPath = folderNames.join('/')
-                    break
-
-                case completeOption:
-                    selectedDir = currentPath.replace(baseDir, '')
-                    break
-
-                default:
-                    currentPath += String(selectedDirOption)
-                    break
-            }
-        }
+        let selectedDir = dir
+            ? option
+                ? dir
+                : await this.pickPath({
+                      expectedDirType: 'folder',
+                      currentPath: dir,
+                  })
+            : await this.pickPath({
+                  expectedDirType: 'folder',
+              })
+        if (!selectedDir) return false
 
         // Nest cli command selection
-        const options = { mo: 'Module', s: 'Service' } as const
-        const optionsRaw = Object.keys(options) as (keyof typeof options)[]
-
-        const selectedOptionRaw = await p.select({
+        const selectedOption = await p.select<'s' | 'mo'>({
             message: 'Select generation source files type',
-            initialValue: '1',
-            options: optionsRaw.map((optionKey) => {
-                return { value: optionKey, label: options[optionKey] }
-            }),
+            initialValue: 's',
+            options: [
+                {
+                    value: 's',
+                    label: 'Service',
+                },
+                {
+                    value: 'mo',
+                    label: 'Module',
+                },
+            ],
         })
-        const selectedOption = selectedOptionRaw as keyof typeof options
+        if (p.isCancel(selectedOption)) return this.nestGenerate(selectedDir)
 
         // Name input
         let name: string | undefined
@@ -191,7 +171,7 @@ export class GenerationCommand extends CommandRunner {
             const input = await p.text({
                 message: 'Enter name in any case',
             })
-            if (p.isCancel(input)) return false
+            if (p.isCancel(input)) return this.nestGenerate(selectedDir, selectedOption)
             name = String(input)
         }
         name = caseKebab(name)
@@ -210,6 +190,122 @@ export class GenerationCommand extends CommandRunner {
         p.note(command, 'Result command:')
         await runConsoleScript(command, true)
         return true
+    }
+
+    private async pickPath(args: {
+        expectedDirType: 'file' | 'folder' | 'fileOrFolder'
+        baseDir?: string
+        currentPath?: string
+    }): Promise<string | false> {
+        const { expectedDirType } = args
+        const baseDir = args.baseDir ?? './src'
+        let currentPath = args.currentPath ?? baseDir
+        let selectedPath: string | undefined
+        let initialOption: string | undefined
+        {
+            const stat = await fs.stat(currentPath)
+            if (stat.isFile()) {
+                const parts = currentPath.split('/')
+                initialOption = '/' + parts.pop()
+                if (parts.length === 0) parts.push('.')
+                currentPath = parts.join('/')
+            }
+        }
+
+        const colorByItemType: Record<
+            Path['type'],
+            ExtractCases<keyof typeof chalk, 'yellowBright' | 'greenBright' | 'blueBright'>
+        > = {
+            dir: 'blueBright',
+            file: 'greenBright',
+        }
+        const labelPrefixByItemType: Record<Path['type'], string> = {
+            dir: '📂',
+            file: '📑',
+        }
+
+        while (!selectedPath) {
+            let dirContent = await this.getDirContent(currentPath)
+            if (expectedDirType === 'folder') {
+                dirContent = dirContent.filter((value) => value.type !== 'file')
+            }
+
+            const prevDir = '../'
+            const optionSelectCurrentFolder = 'optionSelectCurrentFolder'
+
+            const options: p.Option<string>[] = [
+                currentPath === baseDir
+                    ? null
+                    : {
+                          value: prevDir,
+                          label: chalk.yellow(`▲ ${prevDir}`),
+                      },
+
+                expectedDirType === 'file'
+                    ? null
+                    : {
+                          value: optionSelectCurrentFolder,
+                          label: 'Select current folder',
+                          hint: currentPath,
+                      },
+
+                ...dirContent.map((item) => ({
+                    value: '/' + item.path,
+                    label: [
+                        labelPrefixByItemType[item.type],
+                        chalk[colorByItemType[item.type]](item.path),
+                    ].join(' '),
+                })),
+            ].filter((value) => value !== null)
+
+            const selectedOption = await p.select({
+                message: `Directory selection\nCurrent path: ${chalk.greenBright(currentPath)}`,
+                initialValue:
+                    initialOption ??
+                    (expectedDirType === 'file'
+                        ? dirContent[0]
+                            ? '/' + dirContent[0].path
+                            : prevDir
+                        : optionSelectCurrentFolder),
+                options,
+            })
+            initialOption = undefined
+
+            if (p.isCancel(selectedOption) || selectedOption === prevDir) {
+                if (currentPath === baseDir) return false
+                const parts = currentPath.split('/')
+                parts.pop()
+                if (parts.length === 0) parts.push('.')
+                currentPath = parts.join('/')
+                continue
+            } else if (expectedDirType !== 'file' && selectedOption === optionSelectCurrentFolder) {
+                const stat = await fs.stat(currentPath)
+                if (expectedDirType === 'fileOrFolder' || stat.isDirectory()) {
+                    selectedPath = currentPath.replace(baseDir, '')
+                }
+            } else {
+                currentPath += String(selectedOption)
+                if (expectedDirType !== 'folder') {
+                    const stat = await fs.stat(currentPath)
+                    if (stat.isFile()) return currentPath
+                }
+            }
+        }
+
+        return selectedPath
+    }
+
+    private getDirContent(path: string): Promise<Path[]> {
+        return fs.readdir(path, { withFileTypes: true }).then((items) => {
+            const content = items.map(
+                (item) => ({ type: item.isFile() ? 'file' : 'dir', path: item.name }) satisfies Path
+            )
+            content.sort((x1, x2) => x1.path.localeCompare(x2.path))
+            return [
+                ...content.filter((item) => item.type === 'dir'),
+                ...content.filter((item) => item.type === 'file'),
+            ]
+        })
     }
 
     private async formatCodeIfNeeded(config: CliConfig) {
