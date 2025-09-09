@@ -22,7 +22,7 @@ import { ensureDirectoryExistence } from '../utils/file-system.js'
 import { runConsoleScript } from '../utils/run-console-script.js'
 type GenerateCommandOptions = {
     keepOpen?: boolean
-    workDir: string
+    workDir?: string
 }
 type Path = {
     type: 'dir' | 'file'
@@ -71,14 +71,14 @@ export class GenerationCommand extends CommandRunner {
         description: 'Set base work directory',
         name: 'workDir',
     })
-    parseWorkDir(value?: string): string {
+    parseWorkDir(value?: string): string | undefined {
         if (value) {
             const dir = path.resolve(value)
             const stat = statSync(dir)
             if (stat?.isDirectory()) return dir
         }
 
-        return path.resolve('./')
+        return undefined
     }
 
     async run(inputs: string[], options?: GenerateCommandOptions): Promise<void> {
@@ -93,7 +93,8 @@ export class GenerationCommand extends CommandRunner {
         if (!configRaw) throw Error(`Can not read file '${configFilePath}`)
 
         const config = CliConfigSchema.parse(JSON.parse(configRaw))
-        this.workDir = options?.workDir ?? this.parseWorkDir(config.baseDir)
+        this.workDir = options?.workDir ?? this.parseWorkDir(config.baseDir) ?? path.resolve('./')
+        console.log(chalk.gray(`Work directory: ${this.workDir}`))
 
         const optionIds = {
             uniqueMessages: 'uniqueMessages',
@@ -141,12 +142,53 @@ export class GenerationCommand extends CommandRunner {
                     break
 
                 case optionIds.removeSourceCode:
-                    let filePath = await this.pickPath({
-                        expectedDirType: 'fileOrFolder',
+                    const targetPaths = await this.pickPathsSet('Select paths to remove')
+                    if (targetPaths.length === 0) break
+
+                    const confirmation = await p.confirm({
+                        message: [
+                            'Check paths to remove:',
+                            targetPaths.map((item) => this.getPathFormattedString(item)).join('\n'),
+                            '',
+                            'Files and those files imports will be removed. Are you sure?',
+                        ].join('\n'),
                     })
-                    if (!filePath) break
-                    filePath = filePath
-                    await this.removeImports(filePath)
+                    if (confirmation !== true) break
+
+                    const importsRemovingResults = await this.removeImports(targetPaths)
+                    for (const removedFileImport of importsRemovingResults) {
+                        p.log.message(
+                            [
+                                '',
+                                `⚠️  Imports of '${chalk.green(removedFileImport.removedImportFilePath)}' removed from:`,
+                                removedFileImport.filesWhereImportWasRemoved
+                                    .map((item) =>
+                                        [
+                                            item.importedEntities.length > 0
+                                                ? chalk.gray(
+                                                      `\t▼ { ${item.importedEntities.join(', ')} }`
+                                                  )
+                                                : null,
+                                            chalk.blue(`▶︎\t${item.filePath}`),
+                                        ]
+                                            .filter(Boolean)
+                                            .join('\n')
+                                    )
+                                    .join('\n'),
+                            ].join('\n')
+                        )
+                    }
+
+                    const resultsFilePath =
+                        `./imports-remove-result-${new Date().toISOString()}.json`.replaceAll(
+                            ' ',
+                            '-'
+                        )
+                    await fs.writeFile(
+                        resultsFilePath,
+                        JSON.stringify({ targetPaths, importsRemovingResults }, null, 2)
+                    )
+                    p.outro(`Results was saved in ${chalk.blue(resultsFilePath)}`)
 
                     break
 
@@ -172,7 +214,12 @@ export class GenerationCommand extends CommandRunner {
             return
         }
 
-        if (options?.keepOpen) return this.run(inputs, options)
+        if (options?.keepOpen) {
+            const confirmation = await p.confirm({
+                message: 'Start shitest cli again?',
+            })
+            if (confirmation === true) return this.run(inputs, options)
+        }
 
         sayGoodbye()
     }
@@ -199,36 +246,40 @@ export class GenerationCommand extends CommandRunner {
         return result
     }
 
-    async removeImports(targetPath: string, baseProjectDir: string = this.workDir) {
-        const targetPathStat = await fs.stat(targetPath).catch((e) => console.error(e))
-        if (!targetPathStat) return
+    private getPathFolderOrFileName(targetPath: string): string {
+        targetPath = targetPath.trim()
+        if (targetPath.endsWith('/')) targetPath = targetPath.slice(0, -1)
+        const lastPathComponent = targetPath.split('/').pop()
+        return lastPathComponent ? removeExtensions(lastPathComponent) : ''
+    }
 
-        const filePathsToRemove: string[] = targetPathStat.isFile()
-            ? [targetPath]
-            : targetPathStat.isDirectory()
-              ? await this.collectFilesRecursive(targetPath)
-              : []
-
-        const getFileName = (filePath: string) => {
-            const lastPathComponent = filePath.split('/').pop()
-            return lastPathComponent ? removeExtensions(lastPathComponent) : ''
+    async removeImports(targetPathsToRemove: Path[], baseProjectDir: string = this.workDir) {
+        const filesToRemove = {
+            /**
+             * Set of last import path components
+             */
+            importNames: new Set<string>(),
+            filePaths: new Set<string>(),
         }
-
-        const filesToRemove = filePathsToRemove.map((filePath) => ({
-            fileName: getFileName(filePath),
-            path: filePath,
-            pathResolved: path.resolve(filePath),
-        }))
         {
-            const indexFolderFile = filesToRemove.find((file) => file.fileName?.startsWith('index'))
-            if (indexFolderFile) {
-                const pathComponents = indexFolderFile.pathResolved.split('/').slice(0, -1)
-                const folder = pathComponents.join('/')
-                filesToRemove.push({
-                    fileName: pathComponents[pathComponents.length - 1],
-                    path: folder,
-                    pathResolved: folder,
+            const filePathsToRemove: string[] = await Promise.all(
+                targetPathsToRemove.map(async (targetPathsToRemove) => {
+                    return targetPathsToRemove.type === 'file'
+                        ? [targetPathsToRemove.path]
+                        : await this.collectFilesRecursive(targetPathsToRemove.path)
                 })
+            ).then((items) => items.flat())
+
+            for (const targetPath of filePathsToRemove) {
+                const name = this.getPathFolderOrFileName(targetPath)
+                filesToRemove.importNames.add(name)
+                filesToRemove.filePaths.add(targetPath)
+
+                if (name === 'index') {
+                    const pathComponents = targetPath.split('/').slice(0, -1)
+                    const folder = pathComponents.join('/')
+                    filesToRemove.importNames.add(pathComponents[pathComponents.length - 1])
+                }
             }
         }
 
@@ -240,102 +291,80 @@ export class GenerationCommand extends CommandRunner {
         const sourceFiles = project.getSourceFiles()
 
         type RemovedImportFullPath = string
-        type FilesWhereImportWasRemoved = { path: string; imports: string[] }[]
-        const metadata: Map<RemovedImportFullPath, FilesWhereImportWasRemoved> = new Map()
+        type FileWhereImportWasRemoved = { filePath: string; importedEntities: string[] }
+        const metadata: Map<RemovedImportFullPath, FileWhereImportWasRemoved[]> = new Map()
 
         for (const sourceFile of sourceFiles) {
-            let changed = false
+            let fileWasChanged = false
             const sourceFilePathResolved = sourceFile.getFilePath()
-
-            if (filesToRemove.some((file) => file.pathResolved === sourceFilePathResolved)) continue
+            if (filesToRemove.filePaths.has(sourceFilePathResolved)) continue
 
             const importDeclarations = sourceFile.getImportDeclarations()
 
-            for (const importDecl of importDeclarations) {
-                const importPath = importDecl.getModuleSpecifierValue()
-                const importPathFileName = getFileName(importPath)
+            for (const importDeclaration of importDeclarations) {
+                const importSourceCodePath = importDeclaration.getModuleSpecifierValue()
+                const importPathName = this.getPathFolderOrFileName(importSourceCodePath)
+                if (filesToRemove.importNames.has(importPathName) === false) continue
 
-                if (filesToRemove.some((file) => file.fileName === importPathFileName) === false) {
-                    continue
-                }
-
-                const importPathResolved = await this.resolveImportToAbsolutePath(
-                    importPath,
+                const importPathResolved = await this.resolveImportPath(
+                    importSourceCodePath,
                     sourceFilePathResolved
                 )
                 if (!importPathResolved) continue
+                if (filesToRemove.filePaths.has(importPathResolved) === false) continue
 
-                if (filesToRemove.some((file) => file.pathResolved === importPathResolved)) {
-                    const importingEntities = [
-                        importDecl.getDefaultImport()?.getText(),
-                        importDecl.getNamedImports().map((named) => named.getName()),
-                    ].filter(Boolean) as string[]
+                const importedEntities = [
+                    importDeclaration.getDefaultImport()?.getText(),
+                    ...importDeclaration.getNamedImports().map((named) => named.getName()),
+                ].filter((item) => item !== undefined)
 
-                    importDecl.remove()
-                    changed = true
+                importDeclaration.remove()
+                fileWasChanged = true
 
-                    if (!metadata.has(importPathResolved)) {
-                        metadata.set(importPathResolved, [
-                            {
-                                path: sourceFilePathResolved,
-                                imports: importingEntities,
-                            },
-                        ])
-                    } else {
-                        metadata.get(importPathResolved)?.push({
-                            path: sourceFilePathResolved,
-                            imports: importingEntities,
-                        })
-                    }
+                if (!metadata.has(importPathResolved)) {
+                    metadata.set(importPathResolved, [
+                        {
+                            filePath: sourceFilePathResolved,
+                            importedEntities: importedEntities,
+                        },
+                    ])
+                } else {
+                    metadata.get(importPathResolved)?.push({
+                        filePath: sourceFilePathResolved,
+                        importedEntities: importedEntities,
+                    })
                 }
             }
 
-            if (changed) await sourceFile.save()
+            if (fileWasChanged) await sourceFile.save()
         }
 
-        for (const fileToRemovePath of metadata.keys()) {
-            const removedImports = metadata.get(fileToRemovePath)
+        for (const pathToRemove of targetPathsToRemove) {
+            try {
+                await fs.rm(pathToRemove.path, { recursive: true, force: true })
+            } catch (error) {
+                console.warn(error)
+            }
+        }
+
+        const importsRemovingMetadata: {
+            removedImportFilePath: string
+            filesWhereImportWasRemoved: FileWhereImportWasRemoved[]
+        }[] = []
+        for (const removedImportFilePath of metadata.keys()) {
+            const removedImports = metadata.get(removedImportFilePath)
             if (!removedImports) continue
             removedImports.sort()
-            console.log(
-                [
-                    '',
-                    `⚠️  Imports of '${chalk.green(fileToRemovePath)}' removed from:`,
-                    removedImports
-                        .map((item) =>
-                            [
-                                item.imports.length > 0
-                                    ? chalk.gray(`\t▼ { ${item.imports.join(', ')} }`)
-                                    : null,
-                                chalk.blue(`▶︎\t${item.path}`),
-                            ]
-                                .filter(Boolean)
-                                .join('\n')
-                        )
-                        .join('\n'),
-                ].join('\n')
-            )
+            importsRemovingMetadata.push({
+                removedImportFilePath,
+                filesWhereImportWasRemoved: removedImports,
+            })
         }
 
-        await fs.rm(targetPath, { recursive: true, force: true })
-        if (targetPathStat.isFile()) {
-            console.log(`\n⚠️ Removed file:\n${chalk.blue('▶︎\t' + targetPath)}`)
-        } else {
-            console.log(
-                [
-                    '',
-                    '⚠️ Removed directory:',
-                    targetPath,
-                    '',
-                    'Removed files:',
-                    filePathsToRemove.map((item) => chalk.blue(`▶︎\t${item}`)).join('\n'),
-                    '',
-                ].join('\n')
-            )
-        }
+        return importsRemovingMetadata
     }
 
-    private async resolveImportToAbsolutePath(
+    private async resolveImportPath(
         importPath: string,
         sourceFilePath: string
     ): Promise<string | null> {
@@ -365,16 +394,13 @@ export class GenerationCommand extends CommandRunner {
 
     private async nestGenerate(dir?: string, option?: 'mo' | 's'): Promise<boolean> {
         // Dir selection
-        let selectedDir = dir
-            ? option
+        let selectedDir =
+            option && dir
                 ? dir
                 : await this.pickPath({
                       expectedDirType: 'folder',
                       currentPath: dir,
-                  })
-            : await this.pickPath({
-                  expectedDirType: 'folder',
-              })
+                  }).then((item) => item?.path)
         if (!selectedDir) return false
 
         // Nest cli command selection
@@ -421,26 +447,131 @@ export class GenerationCommand extends CommandRunner {
         return true
     }
 
-    private async pickPath(args: {
-        expectedDirType: 'file' | 'folder' | 'fileOrFolder'
-        baseDir?: string
-        currentPath?: string
-    }): Promise<string | false> {
-        const { expectedDirType } = args
-        const baseDir = args.baseDir ?? this.workDir
-        let currentPath = args.currentPath ?? baseDir
-        let selectedPath: string | undefined
-        let initialOption: string | undefined
-        {
-            const stat = await fs.stat(currentPath)
-            if (stat.isFile()) {
-                const parts = currentPath.split('/')
-                initialOption = '/' + parts.pop()
-                if (parts.length === 0) parts.push('.')
-                currentPath = parts.join('/')
+    private async pickPathsSet(titlePrefix?: string): Promise<Path[]> {
+        let selectedPaths: Path[] = []
+
+        let isMenuActive = true
+        const getSelectedPathsString = () =>
+            selectedPaths.length === 0
+                ? undefined
+                : `Current selection: [\n${selectedPaths.map((item) => '▶︎ ' + this.getPathFormattedString(item)).join('\n')}\n]`
+
+        while (isMenuActive) {
+            const options: p.Option<'pickNewPath' | 'removePath' | 'apply'>[] = [
+                {
+                    value: 'pickNewPath',
+                    label: 'Select new path',
+                },
+            ]
+            if (selectedPaths.length !== 0) {
+                options.push({
+                    value: 'removePath',
+                    label: 'Remove path',
+                })
+                options.push({
+                    value: 'apply',
+                    label: 'Apply',
+                })
+            }
+
+            const selectedOption = await p.select({
+                message: [titlePrefix, getSelectedPathsString()].filter(Boolean).join('\n'),
+                options,
+            })
+
+            if (p.isCancel(selectedOption)) return []
+
+            switch (selectedOption) {
+                case 'pickNewPath': {
+                    let pickModeActive = true
+
+                    while (pickModeActive) {
+                        const lastItem = selectedPaths[selectedPaths.length - 1] as Path | undefined
+                        const currentPath =
+                            lastItem?.type === 'file'
+                                ? lastItem?.path
+                                : lastItem?.path.split('/').slice(0, -1).join('/')
+                        const selectedPath = await this.pickPath({
+                            expectedDirType: 'fileOrFolder',
+                            currentPath,
+                            titlePrefix: getSelectedPathsString(),
+                        })
+
+                        if (selectedPath) {
+                            if (
+                                selectedPaths.some((item) => item.path === selectedPath.path) ===
+                                false
+                            ) {
+                                selectedPaths.push(selectedPath)
+                            }
+                        } else {
+                            pickModeActive = false
+                        }
+                    }
+                    break
+                }
+                case 'removePath': {
+                    let isRemoveModeActive = true
+                    while (isRemoveModeActive) {
+                        const selectedOption = await p.select({
+                            message: 'Text',
+                            options: [
+                                {
+                                    value: 'back',
+                                    label: 'Back',
+                                },
+                                ...selectedPaths.map((item) => ({
+                                    value: item.path,
+                                    label: this.getPathFormattedString(item),
+                                })),
+                            ],
+                        })
+                        if (selectedPaths.some((item) => item.path === selectedOption)) {
+                            selectedPaths = selectedPaths.filter(
+                                (item) => item.path !== selectedOption
+                            )
+                        } else {
+                            isRemoveModeActive = false
+                        }
+                    }
+                    break
+                }
+
+                case 'apply':
+                    isMenuActive = false
+                    break
             }
         }
 
+        /**
+         * Fix nested content paths
+         */
+        {
+            const pathGroups = Object.groupBy(selectedPaths, (value) => value.type)
+            const dirs = pathGroups.dir ?? []
+            const files = pathGroups.file ?? []
+
+            dirs.sort((x1, x2) => x1.path.localeCompare(x2.path))
+            files.sort((x1, x2) => x1.path.localeCompare(x2.path))
+
+            selectedPaths = [
+                ...dirs.filter(
+                    (item) =>
+                        pathGroups.dir?.some(
+                            (dir) => item.path !== dir.path && item.path.startsWith(dir.path)
+                        ) === false
+                ),
+                ...files.filter(
+                    (item) =>
+                        pathGroups.dir?.some((dir) => item.path.startsWith(dir.path)) === false
+                ),
+            ]
+        }
+
+        return selectedPaths
+    }
+
+    private getPathFormattedString(value: Path): string {
         const colorByItemType: Record<
             Path['type'],
             ExtractCases<keyof typeof chalk, 'yellowBright' | 'greenBright' | 'blueBright'>
@@ -451,6 +582,35 @@ export class GenerationCommand extends CommandRunner {
         const labelPrefixByItemType: Record<Path['type'], string> = {
             dir: '📂',
             file: '📑',
+        }
+
+        return [
+            labelPrefixByItemType[value.type],
+            chalk[colorByItemType[value.type]](value.path),
+        ].join(' ')
+    }
+
+    private async pickPath(args: {
+        expectedDirType: 'file' | 'folder' | 'fileOrFolder'
+        baseDir?: string
+        currentPath?: string
+        titlePrefix?: string
+    }): Promise<Path | null> {
+        const { expectedDirType } = args
+        const baseDir = args.baseDir ?? this.workDir
+        let currentPath = args.currentPath ?? baseDir
+        let selectedPath: string | undefined
+        let initialOption: string | undefined
+        {
+            const stat = await fs.stat(currentPath)
+            if (stat.isFile() || stat.isDirectory()) {
+                const parts = currentPath.split('/')
+                initialOption = '/' + parts.pop()
+                if (stat.isFile()) {
+                    if (parts.length === 0) parts.push('.')
+                    currentPath = parts.join('/')
+                }
+            }
         }
 
         while (!selectedPath) {
@@ -480,15 +640,12 @@ export class GenerationCommand extends CommandRunner {
 
                 ...dirContent.map((item) => ({
                     value: '/' + item.path,
-                    label: [
-                        labelPrefixByItemType[item.type],
-                        chalk[colorByItemType[item.type]](item.path),
-                    ].join(' '),
+                    label: this.getPathFormattedString(item),
                 })),
             ].filter((value) => value !== null)
 
             const selectedOption = await p.select({
-                message: `Directory selection\nCurrent path: ${chalk.greenBright(currentPath)}`,
+                message: `${args.titlePrefix ?? 'Directory selection'}\nCurrent path: ${chalk.greenBright(currentPath)}`,
                 initialValue:
                     initialOption ??
                     (expectedDirType === 'file'
@@ -501,9 +658,9 @@ export class GenerationCommand extends CommandRunner {
             initialOption = undefined
 
             if (p.isCancel(selectedOption) || selectedOption === prevDir) {
-                if (currentPath === baseDir) return false
+                if (currentPath === baseDir) return null
                 const parts = currentPath.split('/')
-                parts.pop()
+                initialOption = '/' + parts.pop()
                 if (parts.length === 0) parts.push('.')
                 currentPath = parts.join('/')
                 continue
@@ -522,7 +679,11 @@ export class GenerationCommand extends CommandRunner {
         }
 
         const pathResolved = path.resolve(selectedPath)
-        return pathResolved
+        const stat = await fs.stat(pathResolved)
+        return {
+            type: stat.isFile() ? 'file' : 'dir',
+            path: pathResolved,
+        }
     }
 
     /**
