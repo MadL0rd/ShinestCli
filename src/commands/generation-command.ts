@@ -557,13 +557,12 @@ export class GenerationCommand extends CommandRunner {
             selectedPaths = [
                 ...dirs.filter(
                     (item) =>
-                        pathGroups.dir?.some(
+                        dirs.some(
                             (dir) => item.path !== dir.path && item.path.startsWith(dir.path)
                         ) === false
                 ),
                 ...files.filter(
-                    (item) =>
-                        pathGroups.dir?.some((dir) => item.path.startsWith(dir.path)) === false
+                    (item) => dirs.some((dir) => item.path.startsWith(dir.path)) === false
                 ),
             ]
         }
