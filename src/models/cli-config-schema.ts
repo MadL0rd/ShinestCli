@@ -54,6 +54,7 @@ export const GenerationScriptsSchema = z.object({
 export type GenerationScripts = z.infer<typeof GenerationScriptsSchema>
 
 export const CliConfigSchema = z.object({
+    baseDir: z.string().optional(),
     format: FormatSchema,
     generationScripts: GenerationScriptsSchema,
 })
